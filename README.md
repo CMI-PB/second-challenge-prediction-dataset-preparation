@@ -10,7 +10,9 @@ The following steps outline the preprocessing procedure for the prediction datas
 Identify and Retain Overlapping Features:
 The first step involves identifying features that are common between the training and prediction datasets.
 Only these overlapping features will be retained for subsequent analysis to ensure consistency.
-2. Data Normalization
+
+
+## 2. Data Normalization
 Data normalization is a crucial step in preprocessing. Different methods are applied based on the type of assay data:
 
 ### Cell Frequency and Plasma Cytokine Assays:
