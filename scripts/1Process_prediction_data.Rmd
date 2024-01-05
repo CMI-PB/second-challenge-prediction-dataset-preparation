@@ -1,0 +1,266 @@
+---
+title: "CMI-PB 2nd challenge: Process prediction datasets similar to training dataset"
+#format: html
+#editor: visual
+output:
+  BiocStyle::html_document:
+    toc: true
+    toc_float:
+        collapsed: true
+        smooth_scroll: true
+    toc_depth: 3
+    fig_caption: yes
+    code_folding: show
+    number_sections: false
+date: "2023-12-21"
+---
+
+## Download all data files
+
+We manually downloaded data files manually from the following repositories: 1) Raw prediction datasets: [CMI-PB https site](https://www.cmi-pb.org/downloads/cmipb_challenge_datasets/current/2nd_challenge/raw_datasets/). 2) Processed training datasets for ID mapping: [CMI-PB https site](https://www.cmi-pb.org/downloads/cmipb_challenge_datasets/current/2nd_challenge/processed_datasets/).
+
+Alternatively, `RCurl` package can be used to download data files.
+
+```{r}
+#base_dir = "/home/pramod/Documents/GitHub/second-challenge-prediction-dataset-preparation/"
+base_dir = "../"
+
+
+## `codebase.R` installs required packages and all house keepinf functions
+source(paste0(base_dir, "scripts/codebase.R"))
+
+
+dir_data = paste0(base_dir, "data/")
+dir_raw_prediction <- paste0(base_dir, "data/raw_datasets/prediction/")
+dir_processed_prediction <- paste0(base_dir, "data/processed_datasets/prediction/")
+```
+
+## Read data
+
+#### Read the training data object to associate each feature with its corresponding ID
+
+```{r}
+master_processed_training_data_obj = read_rds(paste0(dir_data, "master_processed_training_data.RDS"))
+
+features_training_abtiter = rownames(master_processed_training_data_obj$abtiter_wide$batchCorrected_data)
+features_training_pbmc_gene_expression = rownames(master_processed_training_data_obj$pbmc_gene_expression$batchCorrected_data)
+features_training_plasma_cytokine_concentrations = rownames(master_processed_training_data_obj$plasma_cytokine_concentrations$batchCorrected_data)
+features_training_pbmc_cell_frequency = rownames(master_processed_training_data_obj$pbmc_cell_frequency$batchCorrected_data)
+
+```
+
+#### Read subject and specimen ID mapping inforamtion
+
+```{r}
+d2022_subject <- read_tsv(paste0(dir_raw_prediction, "2022BD_subject.tsv"))
+d2022_specimen <- read_tsv(paste0(dir_raw_prediction, "2022BD_specimen.tsv"))
+
+## create new object subject_specimen
+d2022_subject_specimen <- d2022_specimen %>%
+  left_join(d2022_subject) %>%
+  mutate(timepoint = planned_day_relative_to_boost)
+
+```
+
+#### Read experimental data: four assays
+
+```{r warning=FALSE}
+d2022_pbmc_abtiter <- read_tsv(paste0(dir_raw_prediction, "2022BD_plasma_ab_titer.tsv"))
+d2022_pbmc_cell <- read_tsv(paste0(dir_raw_prediction, "2022BD_pbmc_cell_frequency.tsv"))
+d2022_pbmc_gene <- read_tsv(paste0(dir_raw_prediction, "2022BD_pbmc_gene_expression.tsv"))
+d2022_plasma_cytokine <- read_tsv(paste0(dir_raw_prediction, "2022BD_plasma_cytokine_concentration.tsv"))
+
+
+```
+
+## Process datasets
+
+### abtiter data:
+
+Identify feature overlaps between the prediction dataset and the training abtiter dataset; reformat the prediction abtiter data to align with the training data structure.
+
+```{r}
+#head(master_processed_training_data_obj$abtiter_wide$batchCorrected_data)
+
+d2022_pbmc_abtiter_v1 = d2022_pbmc_abtiter %>%
+  mutate(isotype_antigen = paste0(isotype, "_", antigen)) %>%
+  filter(isotype_antigen %in% features_training_abtiter) %>%
+  dplyr::select(specimen_id, isotype_antigen, MFI_normalised) %>%
+  pivot_wider(names_from = specimen_id, values_from = MFI_normalised) 
+
+d2022_pbmc_abtiter_v1_mat = d2022_pbmc_abtiter_v1 %>%
+  column_to_rownames("isotype_antigen")
+
+## Check training Vs prediction dataset dimentions
+all(rownames(d2022_pbmc_abtiter_v1_mat) %in% rownames(master_processed_training_data_obj$abtiter_wide$batchCorrected_data))
+```
+
+### Gene expression data:
+
+Identify feature overlaps between the prediction dataset and the training gene expression dataset; reformat the prediction gene expression data to align with the training data structure.
+
+```{r}
+#head(master_processed_training_data_obj$pbmc_gene_expression$batchCorrected_data)
+
+d2022_pbmc_gene_v1 = d2022_pbmc_gene %>%
+  filter(versioned_ensembl_gene_id %in% features_training_pbmc_gene_expression) %>% ## Filter
+  dplyr::select(specimen_id, versioned_ensembl_gene_id, tpm) %>%
+  pivot_wider(names_from = specimen_id, values_from = tpm) 
+
+d2022_pbmc_gene_v1_mat = d2022_pbmc_gene_v1 %>%
+  column_to_rownames("versioned_ensembl_gene_id")
+
+## Check training Vs prediction dataset dimentions
+all(rownames(d2022_pbmc_gene_v1_mat) %in% rownames(master_processed_training_data_obj$pbmc_gene_expression$batchCorrected_data))
+```
+
+### Cell Frequency Analysis:
+
+Identify the median at baseline (day 0) in a manner similar to the training dataset. Then, identify feature overlaps between the prediction dataset and the training cell frequency dataset; subsequently, reformat the prediction cell frequency data to align with the training data structure.
+
+```{r}
+## Perform median normalization
+cell_median_D0 <- d2022_pbmc_cell %>%
+    left_join(d2022_subject_specimen) %>%
+    filter(specimen_id %in% unique(d2022_subject_specimen[d2022_subject_specimen$planned_day_relative_to_boost == 0,]$specimen_id)) %>%
+    group_by(dataset, cell_type_name)  %>%
+    summarise(median = median(percent_live_cell, na.rm = T))
+
+## Check if all cell_types have benn captured 
+all(cell_median_D0$cell_type_name %in% d2022_pbmc_cell$cell_type_name)
+
+d2022_pbmc_cell_normalized_pre <-  d2022_pbmc_cell  %>%
+    left_join(d2022_subject_specimen) %>%
+    left_join(cell_median_D0) %>%
+    mutate(percent_live_cell_normalized = if_else(is.na(percent_live_cell) == T, NA, percent_live_cell/median))
+
+## Reshape dataframe in wide format
+d2022_pbmc_cell_normalized_pre_v1 <- d2022_pbmc_cell_normalized_pre  %>%
+    filter(cell_type_name %in% features_training_pbmc_cell_frequency) %>% ## Filter
+    dplyr::select(cell_type_name, specimen_id, percent_live_cell_normalized) %>%
+    pivot_wider(names_from = "cell_type_name", values_from = percent_live_cell_normalized) 
+
+d2022_pbmc_cell_normalized_pre_v1_mat = d2022_pbmc_cell_normalized_pre_v1 %>%
+    column_to_rownames("specimen_id")%>%
+    t() 
+
+## Check training Vs prediction dataset dimentions
+all(rownames(d2022_pbmc_cell_normalized_pre_v1_mat) %in% rownames(master_processed_training_data_obj$pbmc_cell_frequency$batchCorrected_data))
+
+
+## Note: This step is optional and should be selected according to the specific needs of the modeling process. For the preparation of the training dataset, KNN imputation was utilized.
+
+#d2022_pbmc_cell_normalized_pre_v1_mat_imputed = d2022_pbmc_cell_normalized_pre_v1_mat[rowMeans(is.na(d2022_pbmc_cell_normalized_pre_v1_mat)) < 1, ] %>%
+#    as.matrix() %>%
+#    impute.knn() %>%
+#    .$data
+```
+
+### Plasma Cytokine Analysis:
+
+Identify the median at baseline (day 0) in a manner similar to the training dataset. Then, identify feature overlaps between the prediction dataset and the training plasma cytokine dataset; subsequently, reformat the prediction plasma cytokine data to align with the training data structure.
+
+```{r}
+## Perform median normalization
+cytokine_median_D0 <- d2022_plasma_cytokine %>%
+    left_join(d2022_subject_specimen) %>%
+    filter(specimen_id %in% unique(d2022_subject_specimen[d2022_subject_specimen$planned_day_relative_to_boost == 0,]$specimen_id)) %>%
+    group_by(dataset, protein_id)  %>%
+    summarise(median = median(protein_expression, na.rm = T))
+
+d2022_plasma_cytokine_normalized_pre <-  d2022_plasma_cytokine  %>%
+    left_join(d2022_subject_specimen) %>%
+    left_join(cytokine_median_D0) %>%
+    mutate(protein_expression_normalized = if_else(is.na(protein_expression) == T, NA, protein_expression/median))
+  
+## Reshape dataframe in wide format
+d2022_plasma_cytokine_normalized_pre_v1 <- d2022_plasma_cytokine_normalized_pre  %>%
+    filter(protein_id %in% features_training_plasma_cytokine_concentrations) %>% ## Filter
+    dplyr::select(protein_id, specimen_id, protein_expression_normalized) %>%
+    pivot_wider(names_from = "protein_id", values_from = protein_expression_normalized)
+
+d2022_plasma_cytokine_normalized_pre_v1_mat <- d2022_plasma_cytokine_normalized_pre_v1  %>%
+    column_to_rownames("specimen_id")%>%
+    t() 
+
+## Check training Vs prediction dataset dimentions
+all(rownames(d2022_plasma_cytokine_normalized_pre_v1_mat) %in% rownames(master_processed_training_data_obj$plasma_cytokine_concentrations$batchCorrected_data))
+
+
+## Note: This step is optional and should be selected according to the specific needs of the modeling process. For the preparation of the training dataset, KNN imputation was utilized.
+
+#d2022_plasma_cytokine_normalized_pre_v1_mat_imputed = d2022_plasma_cytokine_normalized_pre_v1_mat[rowMeans(is.na(d2022_plasma_cytokine_normalized_pre_v1_mat)) < 1, ] %>%
+#    as.matrix() %>%
+#    impute.knn() %>%
+#    .$data
+
+
+  
+```
+
+### Save normalized data
+#### Prepare the RDS object 
+
+```{r}
+master_processed_prediction_data <- list(
+  
+  subject_specimen = d2022_subject_specimen,
+  abtiter = list(
+              raw_from_database = d2022_pbmc_abtiter,
+              processed_similar_to_training = d2022_pbmc_abtiter_v1_mat
+          ),
+  plasma_cytokine_concentrations = list(
+              raw_from_database = d2022_plasma_cytokine,
+              processed_similar_to_training = d2022_plasma_cytokine_normalized_pre_v1_mat
+          ),
+  pbmc_cell_frequency = list(
+              raw_from_database = d2022_pbmc_cell,
+              processed_similar_to_training = d2022_pbmc_cell_normalized_pre_v1_mat
+          ),
+  pbmc_gene_expression = list(
+              raw_from_database = d2022_pbmc_gene,
+              processed_similar_to_training = d2022_pbmc_gene_v1_mat
+          )
+  
+)
+```
+
+#### Save the data in both RDS format and as individual TSV files for versatile use and accessibility
+##### Note: Uncomment this section when you are ready to save the files.
+
+```{r}
+## Save RDS object
+
+#saveRDS(master_processed_prediction_data, file = paste0(dir_processed_prediction, "master_processed_prediction_data.RDS"))
+
+## Save individual data files
+
+#write_tsv(d2022_subject_specimen, paste0(dir_processed_prediction, "subject_specimen.tsv"))
+#write.table(d2022_pbmc_abtiter_v1_mat, 
+#                file = paste0(dir_processed_prediction, "abtiter_processed_data.tsv"),  
+#                sep = "\t", row.names = TRUE, quote = FALSE
+#            )
+
+#write.table(d2022_plasma_cytokine_normalized_pre_v1_mat, 
+#                file = paste0(dir_processed_prediction, "plasma_cytokine_concentrations_processed_data.tsv"),  
+#                sep = "\t", row.names = TRUE, quote = FALSE
+#            )
+
+#write.table(d2022_pbmc_cell_normalized_pre_v1_mat, 
+#                file = paste0(dir_processed_prediction, "pbmc_cell_frequency_processed_data.tsv"),  
+#                sep = "\t", row.names = TRUE, quote = FALSE
+#            )
+
+#write.table(d2022_pbmc_gene_v1_mat, 
+#                file = paste0(dir_processed_prediction, "pbmc_gene_expression_processed_data.tsv"),  
+#                sep = "\t", row.names = TRUE, quote = FALSE
+#            )
+
+
+```
+
+## session_info()
+
+```{r}
+sessioninfo::session_info()
+```
