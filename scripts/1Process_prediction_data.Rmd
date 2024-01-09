@@ -22,8 +22,8 @@ We manually downloaded data files manually from the following repositories: 1) R
 Alternatively, `RCurl` package can be used to download data files.
 
 ```{r}
-#base_dir = "/home/pramod/Documents/GitHub/second-challenge-prediction-dataset-preparation/"
-base_dir = "../"
+base_dir = "/home/pramod/Documents/GitHub/second-challenge-prediction-dataset-preparation/"
+#base_dir = "../"
 
 
 ## `codebase.R` installs required packages and all house keepinf functions
